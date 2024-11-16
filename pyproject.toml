@@ -1,0 +1,38 @@
+[project]
+name = "bb-to-github-migration"
+version = "0.1.0"
+description = "Migration tool for Bitbucket to GitHub repositories"
+authors = [
+    {name = "Federico Salvioli", email = "salvioli.federico@gmail.com"},
+]
+dependencies = [
+    "PyGithub>=2.1.1",
+    "atlassian-python-api>=3.41.9",
+    "GitPython>=3.1.42",
+    "requests>=2.31.0",
+    "typing-extensions>=4.9.0",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.6.3",
+    "rich>=13.7.0",
+    "typer>=0.9.0",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+package-dir = "src"
+source-includes = ["src", "tests"]
+
+[tool.pdm.scripts]
+test-connection = "bb2gh test-connection"
+migrate-repo = "bb2gh migrate-repo"
+migrate-workspace = "bb2gh migrate-workspace"
+
+[project.scripts]
+bb2gh = "bb_to_gh_migration.cli:main"
