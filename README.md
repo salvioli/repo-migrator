@@ -23,6 +23,7 @@ A Python-based tool for migrating repositories, issues, and pull requests from B
 ## Installation
 
 1. Install dependencies:
+
 ```bash
 pdm install        # Install all dependencies including development tools
 ```
@@ -60,6 +61,7 @@ GH_ORG=your-github-org
 ```
 
 #### Secure Credential Storage (Recommended)
+
 For better security, the tool supports shell command substitution in the .env file. This allows you to fetch credentials from password managers or secure storage:
 
 ```markdown
@@ -114,52 +116,6 @@ pdm run migrate-workspace your_gh_org
 
 you can use the `--dry-run` flag in order to only test the migration.
 
-## Development Commands
-
-PDM provides several convenient commands for development:
-
-```bash
-pdm run lint        # Run Ruff linter
-pdm run format      # Run Black formatter
-pdm run typecheck   # Run MyPy type checker
-pdm run test        # Run pytest
-pdm run coverage    # Run tests with coverage report
-```
-
-## Running Tests
-
-```bash
-# Run all tests
-pdm run test
-
-# Run tests with coverage
-pdm run coverage
-
-# Run specific test file
-pdm run pytest tests/test_specific.py
-
-# Run tests in watch mode (requires pytest-watch)
-pdm run test-watch
-```
-
-## Code Quality
-
-The project uses several tools to maintain code quality:
-
-```bash
-# Run all quality checks
-pdm run check-all
-
-# Format code
-pdm run format
-
-# Lint code
-pdm run lint
-
-# Type check
-pdm run typecheck
-```
-
 ## Limitations
 
 - Pull request merge status cannot be replicated (GitHub API limitation)
@@ -171,15 +127,11 @@ pdm run typecheck
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Make your changes
-4. Run the quality checks:
-   ```bash
-   pdm run check-all
-   ```
-5. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-6. Push to the branch (`git push origin feature/AmazingFeature`)
-7. Open a Pull Request
+1. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+1. Make your changes
+1. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+1. Push to the branch (`git push origin feature/AmazingFeature`)
+1. Open a Pull Request
 
 ## License
 
@@ -192,11 +144,3 @@ For issues and feature requests, please use the GitHub issue tracker.
 ## Authors
 
 - Federico Salvioli - *Initial work* - [GitHub](https://github.com/salvioli)
-
-## Changelog
-
-### [1.0.0] - 2024-03-13
-- Initial release
-- Basic migration functionality
-- PDM project setup
-- Comprehensive testing framework
