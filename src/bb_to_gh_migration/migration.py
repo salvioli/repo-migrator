@@ -1,8 +1,9 @@
 import requests
-import time  # Import time module for sleep
-from github import Github
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import time
+import sys
+from datetime import datetime, timedelta  # Import time module for sleep
+from github import Github, RateLimitExceededException
+from functools import wraps
 
 # from atlassian.bitbucket.cloud import Bitbucket
 import git
@@ -16,6 +17,7 @@ import json
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+ANSI_CLEAR_LINE = '\x1b[2K'
 
 @dataclass
 class MigrationConfig:
@@ -28,41 +30,85 @@ class MigrationConfig:
     verbose: bool = False
 
 
+def countdown(seconds: int) -> None:
+    """Display an interactive countdown timer with ETA"""
+    next_attempt_time = datetime.now() + timedelta(seconds=seconds)
+    time_str = time.strftime("%H:%M:%S", time.gmtime(seconds))
+    sys.stdout.write(f"Waiting for {time_str}\n")
+    sys.stdout.flush()
+    while datetime.now() < next_attempt_time:
+        remaining = (next_attempt_time - datetime.now()).seconds
+        next_time_str = next_attempt_time.strftime("%H:%M:%S")
+        sys.stdout.write(f"{ANSI_CLEAR_LINE}\rWaiting {remaining}s for rate limit (next attempt at {next_time_str})")
+        sys.stdout.flush()
+        time.sleep(0.2)
+    sys.stdout.write(f"{ANSI_CLEAR_LINE}\r")
+    sys.stdout.flush()
+
+def exponential_backoff(max_retries=5, base_delay=10):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.RetryRequest as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"Max retries ({max_retries}) exceeded: {str(e)}")
+                        raise
+                    delay = (2 ** attempt) * base_delay
+                    logger.warning(f"API rate limit hit. Retry {attempt + 1}/{max_retries}")
+                    countdown(delay)
+            return None
+        return wrapper
+    return decorator
+
+
 class BitbucketConnector:
     def __init__(self, config: MigrationConfig):
         self.config = config
         self.base_url = "https://api.bitbucket.org/2.0"
         self.auth = (self.config.bb_username, self.config.bb_password)
-        self.session = self._get_session_with_retries()
+        self.session = requests.Session()
+        self.session.auth = self.auth
 
-    def _get_session_with_retries(self) -> requests.Session:
-        session = requests.Session()
-        retries = Retry(
-            total=5,
-            backoff_factor=1,  # Exponential backoff factor (in seconds)
-            status_forcelist=[403, 429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]
-        )
-        adapter = HTTPAdapter(max_retries=retries)
-        session.mount("https://", adapter)
-        session.auth = self.auth
-        return session
-
+    @exponential_backoff(max_retries=5, base_delay=1)
     def _make_request(self, method: str, url: str, params: Dict = None, data: Dict = None) -> Optional[Dict]:
-        """Helper method to make API requests with retry logic."""
+        """Helper method to make API requests with exponential backoff"""
         try:
             response = self.session.request(method, url, params=params, json=data)
+            
+            # Status codes that should not trigger retries
+            if response.status_code == 404:  # Resource not found
+                logger.info(f"Resource not found (404): {url}")
+                return None
+            elif response.status_code == 400:  # Bad request
+                logger.error(f"Bad request (400): {url}")
+                response.raise_for_status()
+            elif response.status_code == 401:  # Unauthorized
+                logger.error(f"Unauthorized (401): {url}")
+                response.raise_for_status()
+            
+            # Status codes that should trigger retries
+            elif response.status_code in [403, 429, 500, 502, 503, 504]:
+                # 403: Rate limit, 429: Too many requests, 5xx: Server errors
+                logger.warning(f"Received status code {response.status_code}, will retry: {url}")
+                raise requests.exceptions.RetryRequest(response=response)
+            
             response.raise_for_status()
             return response.json()
+            
+        except requests.exceptions.RetryRequest:
+            raise
         except Exception as e:
             logger.error(f"Request failed: {e}")
-            return None
+            raise
 
     def test_connection(self) -> bool:
         """Test Bitbucket connection and permissions"""
         try:
             url = f"{self.base_url}/user"
-            response = requests.get(url, auth=self.auth)
+            response = requests.get(url, auth=self.auth, timeout=15)  # Add timeout here
             response.raise_for_status()
             user_data = response.json()
             logger.info(
@@ -106,22 +152,29 @@ class BitbucketConnector:
         """Get all issues for a repository"""
         issues = []
         url = f"{self.base_url}/repositories/{self.config.bb_workspace}/{repo_slug}/issues"
-        while url:
-            data = self._make_request('GET', url)
-            if not data:
-                break
+        data = self._make_request('GET', url)
+        if data is None:  # Repository doesn't have issues enabled
+            logger.info(f"Issues are not enabled for repository {repo_slug}")
+            return []
+            
+        while data:
             issues.extend(data.get("values", []))
             url = data.get("next")
-            logger.info(f"Retrieved {len(issues)} issues for {repo_slug}")
+            if not url:
+                break
+            data = self._make_request('GET', url)
+            if data:
+                logger.info(f"Retrieved {len(issues)} issues for {repo_slug}")
+            
         if self.config.verbose:
             logger.info(f"Issues for {repo_slug}: {json.dumps(issues, indent=2, sort_keys=True)}")
         return issues
 
     def get_pull_requests(self, repo_slug: str) -> List[Dict]:
-        """Get all pull requests for a repository, including comments"""
+        """Get all open pull requests for a repository, including comments"""
         prs = []
         url = f"{self.base_url}/repositories/{self.config.bb_workspace}/{repo_slug}/pullrequests"
-        params = {'state': 'ALL', 'pagelen': 50}  # Increase page size and ensure pagination
+        params = {'state': 'OPEN', 'pagelen': 50}  # Only fetch open PRs
         
         while url:
             data = self._make_request('GET', url, params=params)
@@ -134,7 +187,7 @@ class BitbucketConnector:
                 prs.append(pr)
             url = data.get("next")
         if self.config.verbose:
-            logger.info(f"Total PRs retrieved: {len(prs)}")
+            logger.info(f"Total open PRs retrieved: {len(prs)}")
         return prs
 
     def get_pull_request_comments(self, repo_slug: str, pr_id: int) -> List[Dict]:
@@ -160,11 +213,13 @@ class GitHubConnector:
     def __init__(self, config: MigrationConfig):
         self.config = config
         self.client = self._setup_client()
-        self.session = self._get_session_with_retries()
+        self.session = requests.Session()
+        self.session.headers.update({"Authorization": f"token {self.config.github_token}"})
 
     def _setup_client(self) -> Github:
         try:
-            client = Github(self.config.github_token)
+            # Disable PyGithub's retry mechanism by setting retry=False
+            client = Github(self.config.github_token, retry=False)
             # Test connection
             client.get_user().login
             logger.info("Successfully connected to GitHub")
@@ -173,25 +228,10 @@ class GitHubConnector:
             logger.error(f"Failed to connect to GitHub: {str(e)}")
             raise
 
-    def _get_session_with_retries(self) -> requests.Session:
-        session = requests.Session()
-        retries = Retry(
-            total=5,
-            backoff_factor=1,  # Exponential backoff factor (in seconds)
-            status_forcelist=[403, 429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]
-        )
-        adapter = HTTPAdapter(max_retries=retries)
-        session.mount("https://", adapter)
-        session.headers.update({"Authorization": f"token {self.config.github_token}"})
-        return session
-
+    @exponential_backoff(max_retries=5, base_delay=1)
     def _make_request(self, func):
-        try:
-            return func()
-        except Exception as e:
-            logger.error(f"Request failed: {e}")
-            return None
+        """Execute GitHub API calls with exponential backoff"""
+        return func()
 
     def test_connection(self) -> bool:
         """Test GitHub connection and permissions"""
@@ -208,6 +248,7 @@ class GitHubConnector:
             logger.error(f"Failed to access organization: {str(e)}")
             return False
 
+    @exponential_backoff(max_retries=5, base_delay=1)
     def create_repository(
         self, name: str, description: str, private: bool
     ) -> Optional[Dict]:
@@ -227,6 +268,7 @@ class GitHubConnector:
         """Get HTTPS clone URL with auth embedded"""
         return f"https://{self.config.github_token}@github.com/{self.config.gh_org}/{repo_name}.git"
 
+    @exponential_backoff(max_retries=5, base_delay=1)
     def create_issue(self, repo_name: str, issue_data: Dict) -> Optional[Dict]:
         """Create a new issue with error handling"""
         if self.config.dry_run:
@@ -256,36 +298,8 @@ Original State: {issue_data.get('state', 'Unknown')}
             logger.info(f"Created issue: {issue.title}")
         return issue
 
+    @exponential_backoff(max_retries=5, base_delay=1)
     def create_pull_request(self, repo_name: str, pr_data: Dict) -> Optional[Dict]:
-        """Create a new pull request with comments"""
-        if self.config.dry_run:
-            logger.info(f"[DRY RUN] Would create pull request: {pr_data.get('title')}")
-            return None
-        org = self.client.get_organization(self.config.gh_org)
-        repo = org.get_repo(repo_name)
-        def create_pr():
-            title = pr_data.get("title", "No title")
-            body = f"""Migrated from Bitbucket Pull Request
-Original Author: {pr_data.get('author', {}).get('display_name', 'Unknown')}
-Original Created On: {pr_data.get('created_on', 'Unknown')}
-Original Link: {pr_data.get('links', {}).get('html', {}).get('href', '')}
-
-{pr_data.get('description', '')}"""
-            source_branch = pr_data.get('source', {}).get('branch', {}).get('name')
-            target_branch = pr_data.get('destination', {}).get('branch', {}).get('name')
-            if not source_branch or not target_branch:
-                logger.error(f"Missing branch information for PR: {title}")
-                return None
-            pr = repo.create_pull(title=title, body=body, head=source_branch, base=target_branch)
-            # Handle comments, assignees, and PR state here...
-            return pr
-        pr = self._make_request(create_pr)
-        if pr:
-            logger.info(f"Created pull request: {pr.title}")
-        return pr
-
-    def create_pull_request(self, repo_name: str, pr_data: Dict) -> Optional[Dict]:
-        """Create a new pull request with comments"""
         try:
             if self.config.dry_run:
                 logger.info(f"[DRY RUN] Would create pull request: {pr_data.get('title')}")
@@ -294,65 +308,24 @@ Original Link: {pr_data.get('links', {}).get('html', {}).get('href', '')}
             org = self.client.get_organization(self.config.gh_org)
             repo = org.get_repo(repo_name)
 
-            title = pr_data.get("title", "No title")
-            body = f"""Migrated from Bitbucket Pull Request
-Original Author: {pr_data.get('author', {}).get('display_name', 'Unknown')}
-Original Created On: {pr_data.get('created_on', 'Unknown')}
-Original Link: {pr_data.get('links', {}).get('html', {}).get('href', '')}
-
-{pr_data.get('description', '')}"""
-
             # Get branch information
             source_branch = pr_data.get('source', {}).get('branch', {}).get('name')
             target_branch = pr_data.get('destination', {}).get('branch', {}).get('name')
 
             if not source_branch or not target_branch:
-                logger.error(f"Missing branch information for PR: {title}")
+                logger.error(f"Missing branch information for PR: {pr_data.get('title')}")
                 return None
 
+            # Create pull request
             pr = repo.create_pull(
-                title=title,
-                body=body,
+                title=pr_data.get("title", "No title"),
+                body=self._format_pr_body(pr_data),
                 head=source_branch,
                 base=target_branch
             )
 
             # Handle comments
-            pr_comments = pr_data.get('comments', [])
-            if pr_comments:
-                logger.info(f"Migrating {len(pr_comments)} comments for PR: {title}")
-                for comment in pr_comments:
-                    try:
-                        comment_body = f"""Comment by {comment.get('user', {}).get('display_name', 'Unknown')}
-Original comment date: {comment.get('created_on', 'Unknown')}
-
-{comment.get('content', {}).get('raw', '')}"""
-                        pr.create_issue_comment(comment_body)
-                    except Exception as e:
-                        logger.warning(f"Failed to create comment: {str(e)}")
-
-            # Handle assignees
-            reviewers = pr_data.get('reviewers', [])
-            if reviewers:
-                assignees = [
-                    reviewer.get('user', {}).get('username')
-                    for reviewer in reviewers
-                    if reviewer.get('user', {}).get('username')
-                ]
-                if assignees:
-                    logger.info(f"Setting assignees for PR: {assignees}")
-                    try:
-                        pr.add_to_assignees(*assignees)
-                    except Exception as e:
-                        logger.warning(f"Failed to set assignees {assignees}: {str(e)}")
-
-            # Handle PR state
-            if pr_data.get("state") == "MERGED":
-                logger.info(f"Original PR was merged. Marking as closed: {title}")
-                pr.edit(state="closed")
-            elif pr_data.get("state") == "DECLINED":
-                logger.info(f"Original PR was declined. Marking as closed: {title}")
-                pr.edit(state="closed")
+            self._add_pr_comments(pr, pr_data.get('comments', []))
 
             logger.info(f"Created pull request: {pr.title}")
             return pr
@@ -360,6 +333,31 @@ Original comment date: {comment.get('created_on', 'Unknown')}
         except Exception as e:
             logger.error(f"Failed to create pull request {pr_data.get('title')}: {str(e)}")
             return None
+
+    def _add_pr_comments(self, pr, comments: List[Dict]) -> None:
+        """Add comments to a pull request"""
+        if not comments:
+            return
+        
+        logger.info(f"Migrating {len(comments)} comments")
+        for comment in comments:
+            try:
+                comment_body = f"""Comment by {comment.get('user', {}).get('display_name', 'Unknown')}
+Original comment date: {comment.get('created_on', 'Unknown')}
+
+{comment.get('content', {}).get('raw', '')}"""
+                pr.create_issue_comment(comment_body)
+            except Exception as e:
+                logger.warning(f"Failed to create comment: {str(e)}")
+
+    def _format_pr_body(self, pr_data: Dict) -> str:
+        """Format pull request description with migration metadata"""
+        return f"""Migrated from Bitbucket Pull Request
+Original Author: {pr_data.get('author', {}).get('display_name', 'Unknown')}
+Original Created On: {pr_data.get('created_on', 'Unknown')}
+Original Link: {pr_data.get('links', {}).get('html', {}).get('href', '')}
+
+{pr_data.get('description', '')}"""
 
 
 class Migrator:
@@ -429,9 +427,9 @@ class Migrator:
         logger.info(f"Found {len(issues)} issues")
 
         # Step 3: Get pull requests
-        logger.info(f"{mode}Step 3: Getting pull requests")
+        logger.info(f"{mode}Step 3: Getting open pull requests")
         prs = self.bb.get_pull_requests(repo_slug)
-        logger.info(f"Found {len(prs)} pull requests")
+        logger.info(f"Found {len(prs)} open pull requests")
 
         # Step 4: Create repository and migrate content
         if self.config.dry_run:

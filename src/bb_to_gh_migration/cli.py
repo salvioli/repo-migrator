@@ -1,6 +1,6 @@
 import typer
 from rich import print
-from typing import Optional
+from typing import Optional, List
 import subprocess
 import os
 from dotenv import load_dotenv
@@ -73,7 +73,7 @@ def test_connection(
 
 @app.command()
 def migrate_repo(
-    repo_slug: str = typer.Argument(..., help="Repository to migrate"),
+    repo_slugs: List[str] = typer.Argument(..., help="Repositories to migrate"),
     bb_username: str = typer.Option(None, help="Bitbucket username"),
     bb_password: str = typer.Option(None, help="Bitbucket password", prompt_required=False),
     github_token: str = typer.Option(None, help="GitHub token", prompt_required=False),
@@ -82,12 +82,16 @@ def migrate_repo(
     dry_run: bool = typer.Option(False, help="Simulate migration without making changes"),
     verbose: bool = typer.Option(False, help="Enable verbose logging"),
 ):
-    """Migrate a single repository."""
+    """Migrate one or more repositories."""
     config = get_config(bb_username, bb_password, github_token, bb_workspace, gh_org, dry_run, verbose)
-    tester = Migrator(config)
-    if not tester.test_connections():
+    migrator = Migrator(config)
+    if not migrator.test_connections():
         raise typer.Exit(1)
-    tester.migrate_single_repository(repo_slug)
+    
+    print(f"\n[bold]Starting migration of {len(repo_slugs)} repositories[/bold]")
+    for i, repo_slug in enumerate(repo_slugs, 1):
+        print(f"\n[bold]Migrating repository {i}/{len(repo_slugs)}: {repo_slug}[/bold]")
+        migrator.migrate_single_repository(repo_slug)
 
 @app.command()
 def migrate_workspace(
