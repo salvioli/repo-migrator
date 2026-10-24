@@ -70,7 +70,7 @@ BB_API_TOKEN_CMD=gpg --quiet --decrypt /path/to/bitbucket_token.gpg
 GITHUB_TOKEN_CMD=op read "op://Private/GitHub Token/credential"
 ```
 
-Credentials are handed to git through a credential helper scoped to each remote, so they never appear in URLs, logs or the process list, and are never stored by your own git credential helpers.
+Credentials are handed to git through a credential helper scoped to each remote, so they never appear in URLs, command lines or logs, and are never stored by your own git credential helpers.
 
 ## Usage
 
@@ -109,7 +109,7 @@ A repository that already exists on GitHub and has content is skipped. After an 
 - Bitbucket Cloud no longer provides Issues or Wikis, so neither can be migrated
 - Only open pull requests are migrated. Pull requests from forks are skipped, because their branches are not part of the repository
 - GitHub assigns new pull request numbers, so `#N` references in migrated text may point to different items
-- Reviewers, approvals, tasks and attachments are not migrated. Comments are posted by the token owner, with the original author and date in a header
+- Reviewers, approvals, tasks and attachments are not migrated. Pull requests and comments are created by the token owner, with the original author and date in a header
 - GitHub rejects pushes containing files over 100 MB that are not stored in Git LFS
 
 ## Development
@@ -133,7 +133,7 @@ The tests run the CLI end to end against local fakes of the Bitbucket and GitHub
 
 ## License
 
-MIT License - see the [LICENSE](LICENSE) file for details
+MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Support
 
@@ -141,4 +141,4 @@ For issues and feature requests, please use the GitHub issue tracker.
 
 ## Authors
 
-- Federico Salvioli - *Initial work* - [GitHub](https://github.com/salvioli)
+- Federico Salvioli: *initial work* ([GitHub](https://github.com/salvioli))

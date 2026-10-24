@@ -17,9 +17,9 @@ Resume = Annotated[bool, typer.Option(help="Continue migrating into repositories
 @app.callback()
 def main_options(
     ctx: typer.Context,
-    bb_email: Annotated[str | None, typer.Option(help="Atlassian account e-mail [env: BB_EMAIL]")] = None,
-    bb_workspace: Annotated[str | None, typer.Option(help="Bitbucket workspace [env: BB_WORKSPACE]")] = None,
-    gh_org: Annotated[str | None, typer.Option(help="GitHub organization or user [env: GH_ORG]")] = None,
+    bb_email: Annotated[str | None, typer.Option(envvar="BB_EMAIL", help="Atlassian account e-mail")] = None,
+    bb_workspace: Annotated[str | None, typer.Option(envvar="BB_WORKSPACE", help="Bitbucket workspace")] = None,
+    gh_org: Annotated[str | None, typer.Option(envvar="GH_ORG", help="GitHub organization or user")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
 ):
     """Secrets are read from BB_API_TOKEN and GITHUB_TOKEN, or from the output of the
