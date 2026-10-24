@@ -1,117 +1,88 @@
+import logging
+from typing import Annotated
+
 import typer
+from dotenv import find_dotenv, load_dotenv
 from rich import print
-from typing import Optional, List
-import subprocess
-import os
-from dotenv import load_dotenv
-from .migration import MigrationConfig, Migrator
+
+from .config import ConfigError, load_config
+from .migration import Migrator, RepoResult
 
 app = typer.Typer(help="Bitbucket to GitHub migration tool")
 
-# Load environment variables from .env file
-load_dotenv()
+DryRun = Annotated[bool, typer.Option(help="Report what would be migrated without changing anything")]
+Resume = Annotated[bool, typer.Option(help="Continue migrating into repositories that already exist on GitHub")]
 
-def load_env_value(value: Optional[str]) -> Optional[str]:
-    """Load environment value, evaluating shell commands if needed"""
-    if not value:
-        return None
-    if value.startswith('$(') and value.endswith(')'):
-        try:
-            cmd = value[2:-1]  # Remove $( and )
-            return subprocess.check_output(cmd, shell=True, text=True).strip()
-        except subprocess.SubprocessError as e:
-            logger.warning(f"Failed to execute shell command {cmd}: {e}")
-            return None
-    return value
 
-def get_config(
-    bb_username: str,
-    bb_password: str,
-    github_token: str,
-    bb_workspace: str,
-    gh_org: str,
-    dry_run: bool,
-    verbose: bool,
-) -> MigrationConfig:
-    """Create configuration from CLI options or environment variables."""
-    return MigrationConfig(
-        bb_username=bb_username or load_env_value(os.getenv('BB_USERNAME')),
-        bb_password=bb_password or load_env_value(os.getenv('BB_PASSWORD')),
-        github_token=github_token or load_env_value(os.getenv('GITHUB_TOKEN')),
-        bb_workspace=bb_workspace or load_env_value(os.getenv('BB_WORKSPACE')),
-        gh_org=gh_org or load_env_value(os.getenv('GH_ORG')),
-        dry_run=dry_run,
-        verbose=verbose,
-    )
+@app.callback()
+def main_options(
+    ctx: typer.Context,
+    bb_email: Annotated[str | None, typer.Option(help="Atlassian account e-mail [env: BB_EMAIL]")] = None,
+    bb_workspace: Annotated[str | None, typer.Option(help="Bitbucket workspace [env: BB_WORKSPACE]")] = None,
+    gh_org: Annotated[str | None, typer.Option(help="GitHub organization or user [env: GH_ORG]")] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
+):
+    """Secrets are read from BB_API_TOKEN and GITHUB_TOKEN, or from the output of the
+    commands in BB_API_TOKEN_CMD and GITHUB_TOKEN_CMD."""
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="%(levelname)s %(message)s")
+    if not verbose:
+        logging.getLogger("github").setLevel(logging.WARNING)
+    ctx.obj = (bb_email, bb_workspace, gh_org)
+
+
+def _connect(ctx: typer.Context) -> Migrator:
+    try:
+        config = load_config(*ctx.obj)
+    except ConfigError as e:
+        print(f"[red]{e}[/red]")
+        raise typer.Exit(2) from None
+    migrator = Migrator(config)
+    if not migrator.check_connections():
+        print("[red]Connection test failed. Check your credentials and permissions.[/red]")
+        raise typer.Exit(1)
+    return migrator
+
 
 @app.command()
-def test_connection(
-    bb_username: str = typer.Option(None, help="Bitbucket username"),
-    bb_password: str = typer.Option(None, help="Bitbucket password", prompt_required=False),
-    github_token: str = typer.Option(None, help="GitHub token", prompt_required=False),
-    bb_workspace: str = typer.Option(None, help="Bitbucket workspace"),
-    gh_org: str = typer.Option(None, help="GitHub organization"),
-    dry_run: bool = typer.Option(False, help="Perform dry run without making changes"),
-    verbose: bool = typer.Option(False, help="Enable verbose logging"),
-):
+def test_connection(ctx: typer.Context):
     """Test connections to Bitbucket and GitHub."""
-    config = get_config(bb_username, bb_password, github_token, bb_workspace, gh_org, dry_run, verbose)
-    tester = Migrator(config)
-    success = tester.test_connections()
+    slugs = _connect(ctx).workspace_repositories()
+    print(f"[green]Connection test successful.[/green] {len(slugs)} repositories in the Bitbucket workspace.")
+    for slug in slugs:
+        print(f"  {slug}")
 
-    if success:
-        print("[green]Connection test successful! ✓[/green]")
-        if config.verbose:
-            print(f"Connected to Bitbucket workspace: [bold]{config.bb_workspace}[/bold]")
-            print(f"Connected to GitHub organization: [bold]{config.gh_org}[/bold]")
-    else:
-        print("[red]Connection test failed! ✗[/red]")
-        print("Failed to connect to Bitbucket or GitHub. Please check your credentials and permissions.")
-        raise typer.Exit(1)
-    
-    tester.test_repository_listing()
 
 @app.command()
 def migrate_repo(
-    repo_slugs: List[str] = typer.Argument(..., help="Repositories to migrate"),
-    bb_username: str = typer.Option(None, help="Bitbucket username"),
-    bb_password: str = typer.Option(None, help="Bitbucket password", prompt_required=False),
-    github_token: str = typer.Option(None, help="GitHub token", prompt_required=False),
-    bb_workspace: str = typer.Option(None, help="Bitbucket workspace"),
-    gh_org: str = typer.Option(None, help="GitHub organization"),
-    dry_run: bool = typer.Option(False, help="Simulate migration without making changes"),
-    verbose: bool = typer.Option(False, help="Enable verbose logging"),
+    ctx: typer.Context,
+    repo_slugs: Annotated[list[str], typer.Argument(help="Repositories to migrate")],
+    dry_run: DryRun = False,
+    resume: Resume = False,
 ):
     """Migrate one or more repositories."""
-    config = get_config(bb_username, bb_password, github_token, bb_workspace, gh_org, dry_run, verbose)
-    migrator = Migrator(config)
-    if not migrator.test_connections():
-        raise typer.Exit(1)
-    
-    print(f"\n[bold]Starting migration of {len(repo_slugs)} repositories[/bold]")
-    for i, repo_slug in enumerate(repo_slugs, 1):
-        print(f"\n[bold]Migrating repository {i}/{len(repo_slugs)}: {repo_slug}[/bold]")
-        migrator.migrate_single_repository(repo_slug)
+    _report(_connect(ctx).migrate(repo_slugs, dry_run=dry_run, resume=resume))
+
 
 @app.command()
-def migrate_workspace(
-    bb_username: str = typer.Option(None, help="Bitbucket username"),
-    bb_password: str = typer.Option(None, help="Bitbucket password", prompt_required=False),
-    github_token: str = typer.Option(None, help="GitHub token", prompt_required=False),
-    bb_workspace: str = typer.Option(None, help="Bitbucket workspace"),
-    gh_org: str = typer.Option(None, help="GitHub organization"),
-    dry_run: bool = typer.Option(False, help="Simulate migration without making changes"),
-    verbose: bool = typer.Option(False, help="Enable verbose logging"),
-):
+def migrate_workspace(ctx: typer.Context, dry_run: DryRun = False, resume: Resume = False):
     """Migrate all repositories in the Bitbucket workspace."""
-    config = get_config(bb_username, bb_password, github_token, bb_workspace, gh_org, dry_run, verbose)
-    migrator = Migrator(config)
-    if not migrator.test_connections():
+    migrator = _connect(ctx)
+    _report(migrator.migrate(migrator.workspace_repositories(), dry_run=dry_run, resume=resume))
+
+
+def _report(results: list[RepoResult]) -> None:
+    print("\n[bold]Summary[/bold]")
+    for result in results:
+        color = "green" if result.ok else "yellow" if result.status == "skipped" else "red"
+        print(f"  [{color}]{result.status:8}[/{color}] {result.slug}: {result.detail}")
+    if not all(result.ok for result in results):
         raise typer.Exit(1)
-    migrator.migrate_workspace()
+
 
 def main():
+    load_dotenv(find_dotenv(usecwd=True))
     app()
+
 
 if __name__ == "__main__":
     main()

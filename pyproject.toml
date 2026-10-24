@@ -6,23 +6,27 @@ authors = [
     {name = "Federico Salvioli", email = "salvioli.federico@gmail.com"},
 ]
 dependencies = [
-    "PyGithub>=2.1.1",
-    "atlassian-python-api>=3.41.9",
-    "GitPython>=3.1.42",
+    "PyGithub>=2.5.0",
     "requests>=2.31.0",
-    "typing-extensions>=4.9.0",
+    "urllib3>=2.0",
     "python-dotenv>=1.0.1",
-    "pydantic>=2.6.3",
     "rich>=13.7.0",
     "typer>=0.9.0",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
 
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
+
+[dependency-groups]
+test = ["pytest>=8"]
+lint = ["ruff>=0.17.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.pdm]
 distribution = true
@@ -33,6 +37,8 @@ source-includes = ["src", "tests"]
 test-connection = "bb2gh test-connection"
 migrate-repo = "bb2gh migrate-repo"
 migrate-workspace = "bb2gh migrate-workspace"
+test = "pytest"
+lint = "ruff check src tests"
 
 [project.scripts]
 bb2gh = "bb_to_gh_migration.cli:main"

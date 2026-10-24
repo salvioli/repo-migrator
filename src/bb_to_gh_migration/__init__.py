@@ -1,9 +1,8 @@
-
 """Bitbucket to GitHub migration tool."""
 
 __version__ = "1.0.0"
 
-from .cli import app
-from .migration import MigrationConfig, Migrator
+from .config import MigrationConfig
+from .migration import Migrator
 
-__all__ = ["app", "MigrationConfig", "Migrator"]
+__all__ = ["MigrationConfig", "Migrator"]

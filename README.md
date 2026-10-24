@@ -1,128 +1,126 @@
 # Bitbucket to GitHub Migration Tool
 
-A Python-based tool for migrating repositories, issues, and pull requests from Bitbucket to GitHub. This tool helps teams migrate their entire Bitbucket workspace to a GitHub organization while preserving as much metadata as possible.
+A Python tool that migrates repositories and their open pull requests from a Bitbucket Cloud workspace to a GitHub organization or user account, preserving as much metadata as possible.
 
 ## Features
 
-- Full repository migration including all branches and tags
-- Issue migration with comments and metadata
-- Pull request migration with comments and status
-- Dry-run mode for testing
-- Verbose logging for debugging
-- Incremental testing capabilities
-- Error handling and reporting
+- Full repository migration: every branch and tag, plus Git LFS objects
+- Default branch carried over from Bitbucket
+- Open pull requests with their description and comments, including file and line context for inline comments
+- `@mentions` in migrated text are neutralized so GitHub does not notify unrelated users
+- Safe reruns: an interrupted migration can be resumed without creating duplicates
+- Dry-run mode that reports what would be migrated without changing anything
+- Rate limits on both sides are respected and retried automatically
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- Git installed and configured
-- Admin access to your Bitbucket workspace
-- Admin access to your GitHub organization
-- PDM installed (recommended for dependency management)
+- Python 3.10 or higher
+- Git, and Git LFS for repositories that use it
+- PDM (recommended for dependency management)
 
 ## Installation
 
-1. Install dependencies:
-
 ```bash
-pdm install        # Install all dependencies including development tools
+pdm install
 ```
 
 ## Configuration
 
 ### Required Credentials
 
-1. **Bitbucket**:
-   - Username
-   - App Password with the following permissions:
-     - Account: Read
-     - Repositories: Read
-     - Issues: Read
-     - Pull requests: Read
+1. **Bitbucket**: an [Atlassian API token](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/) with these scopes:
+   - `read:repository:bitbucket`
+   - `read:pullrequest:bitbucket`
 
-2. **GitHub**:
-   - Personal Access Token with the following permissions:
-     - `repo` (Full control of private repositories)
-     - `admin:org` (Full control of orgs and teams)
-     - `workflow` (Update GitHub Action workflows)
+2. **GitHub**: a personal access token.
+   - Classic token: `repo` and `workflow` (`workflow` is needed to push repositories containing `.github/workflows`)
+   - Fine-grained token: Administration, Contents, Pull requests and Workflows, all with write access
 
-### Environment Variables
+### Settings
 
-The tool supports configuration via environment variables. Create a `.env` file by copying the template:
+Settings are read from the environment, or from a `.env` file in the current directory. Copy `.env.example` to get started.
 
-#### Basic Configuration
+| Setting | Description |
+| --- | --- |
+| `BB_EMAIL` | Atlassian account e-mail |
+| `BB_WORKSPACE` | Bitbucket workspace to migrate from |
+| `BB_API_TOKEN` or `BB_API_TOKEN_CMD` | Bitbucket API token, or a command printing it |
+| `GH_ORG` | GitHub organization, or your own user name, to migrate into |
+| `GITHUB_TOKEN` or `GITHUB_TOKEN_CMD` | GitHub token, or a command printing it |
 
-```markdown
-BB_USERNAME=your-bitbucket-username
-BB_PASSWORD=your-password
-BB_WORKSPACE=your-bitbucket-workspace
-GITHUB_TOKEN=your-github-token
-GH_ORG=your-github-org
-```
+`BB_EMAIL`, `BB_WORKSPACE` and `GH_ORG` can also be given as `--bb-email`, `--bb-workspace` and `--gh-org` before the command name. Secrets are only accepted from the environment, so they never end up in shell history.
+
+`GH_API_URL` and `GH_GIT_URL` point the tool at GitHub Enterprise Server, for example `https://github.example.com/api/v3` and `https://github.example.com`.
 
 #### Secure Credential Storage (Recommended)
 
-For better security, the tool supports shell command substitution in the .env file. This allows you to fetch credentials from password managers or secure storage:
+The `*_CMD` settings fetch secrets from a password manager instead of storing them in plain text. The command runs without a shell, so pipes and `$(...)` are not supported:
 
-```markdown
-# Use 'pass' password manager
-BB_PASSWORD=$(pass show bitbucket/password)
+```bash
+# pass
+BB_API_TOKEN_CMD=pass show bitbucket/api-token
 
-# Use macOS keychain
-GITHUB_TOKEN=$(security find-generic-password -a "github-migration" -w)
+# macOS keychain
+GITHUB_TOKEN_CMD=security find-generic-password -a github-migration -w
 
-# Use GPG encrypted file
-BB_PASSWORD=$(gpg -d ~/.bitbucket_password.gpg)
+# GPG encrypted file
+BB_API_TOKEN_CMD=gpg --quiet --decrypt /path/to/bitbucket_token.gpg
 
-# Use 1Password CLI
-GITHUB_TOKEN=$(op item get "GitHub Token" --fields credential)
+# 1Password CLI
+GITHUB_TOKEN_CMD=op read "op://Private/GitHub Token/credential"
 ```
+
+Credentials are handed to git through a credential helper scoped to each remote, so they never appear in URLs, logs or the process list, and are never stored by your own git credential helpers.
 
 ## Usage
 
 ### Testing Connections
 
-First, test your connections to both platforms:
-
 ```bash
 pdm run test-connection
 ```
 
-### Verbose Testing
+Use `pdm run bb2gh --verbose test-connection` for debug logging.
 
-To see detailed API responses and data:
-
-```bash
-pdm run test-connection --verbose
-```
-
-### Testing Single Repository
-
-To test migration for a specific repository:
+### Migrating Repositories
 
 ```bash
-pdm run migrate-repo \
-    --dry-run \
-    repository-name
+pdm run migrate-repo --dry-run repository-name other-repository
+pdm run migrate-repo repository-name other-repository
 ```
 
-### Full Migration
-
-To fully migrate the workspace use the following command:
+### Migrating the Whole Workspace
 
 ```bash
-pdm run migrate-workspace your_gh_org
+pdm run migrate-workspace --dry-run
+pdm run migrate-workspace
 ```
 
-you can use the `--dry-run` flag in order to only test the migration.
+Every repository is attempted even if an earlier one fails, and a summary is printed at the end. The exit code is non-zero when anything failed or was skipped.
+
+### Resuming
+
+A repository that already exists on GitHub and has content is skipped. After an interrupted run, migrate it again with `--resume`: refs are pushed again, and pull requests and comments that were already migrated are left alone.
+
+`--resume` force pushes every Bitbucket ref and deletes GitHub refs that do not exist on Bitbucket, so only use it on repositories created by this tool.
 
 ## Limitations
 
-- Pull request merge status cannot be replicated (GitHub API limitation)
-- Review comments and approval states are migrated as regular comments
-- PR creation will fail if the source branch no longer exists
-- GitHub API rate limits may affect large migrations
-- Some Bitbucket-specific features may not have GitHub equivalents
+- Bitbucket Cloud no longer provides Issues or Wikis, so neither can be migrated
+- Only open pull requests are migrated. Pull requests from forks are skipped, because their branches are not part of the repository
+- GitHub assigns new pull request numbers, so `#N` references in migrated text may point to different items
+- Reviewers, approvals, tasks and attachments are not migrated. Comments are posted by the token owner, with the original author and date in a header
+- GitHub rejects pushes containing files over 100 MB that are not stored in Git LFS
+
+## Development
+
+```bash
+pdm install -G test -G lint
+pdm run test
+pdm run lint
+```
+
+The tests run the CLI end to end against local fakes of the Bitbucket and GitHub APIs, including real git and Git LFS transfers, so they need neither network access nor credentials.
 
 ## Contributing
 
